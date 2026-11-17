@@ -1,0 +1,118 @@
+/*
+ * 原生 Illustrator 文本替换模板（Edit 驱动，改活文本对象后另存真 .ai）。
+ * 用法：改好下面的 SRC/OUT/MAP 后，通过 run_jsx.ps1 或 AI 菜单 文件>脚本>其他脚本 运行。
+ * 批量：把 BATCH_DIR 指到装 .ai 的文件夹，输出自动加 _fr 后缀（改 SUFFIX 变量换语言）。
+ */
+#target illustrator
+
+var SRC_FILE  = "G:/path/to/input.ai";
+var OUT_FILE  = "G:/path/to/output_ai.ai";
+var LOG_FILE  = "G:/path/to/work/jsx_result.txt";
+
+/* 批量模式：BATCH_DIR 非空则处理该目录下全部 .ai，输出到 OUT_DIR */
+var BATCH_DIR = "";
+var OUT_DIR   = "G:/path/to/output";
+var SUFFIX    = "_fr";          // 输出文件名后缀
+
+/* 替换表：按 textFrame 全文 strip 后精确匹配。特殊字符用 \\uXXXX（\\u0153=œ, \\u00e9=é） */
+var MAP = {
+    "Letters":   "Lettres",
+    "apple":     "pomme",
+    "dog":       "chien",
+    "candy":     "bonbon",
+    "balloon":   "ballon",
+    "egg":       "\\u0153uf",
+    "fish":      "poisson",
+    "giraffe":   "girafe",
+    "house":     "maison",
+    "ice":       "glace",
+    "jellyfish": "m\\u00e9duse"
+};
+
+var lines = [];
+function log(s) { lines.push(s); }
+
+function writeLog() {
+    var f = new File(LOG_FILE);
+    f.open("w");
+    f.encoding = "UTF-8";
+    f.writeln(lines.join("\\n"));
+    f.close();
+}
+
+/* 替换单个 textFrame：恢复原字体/字号/颜色/对齐，并用 visibleBounds 中心回补，
+   使新文字可见边界中心与原文字重合（误差目标 <=1pt），长译文不偏移。
+   ⚠️ 政策：不缩小字号适配长译文；溢出/遮挡要记录，不做静默版式妥协。 */
+function replaceInDoc(doc) {
+    var count = 0;
+    for (var i = 0; i < doc.textFrames.length; i++) {
+        var tf = doc.textFrames[i];
+        var key = tf.contents.replace(/^\\s+|\\s+$/g, "");
+        if (!MAP[key]) continue;
+
+        var old = tf.textRange;
+        var fnt = null, sz = null, clr = null, just = null;
+        try { fnt  = old.characterAttributes.textFont; } catch (e) {}
+        try { sz   = old.characterAttributes.size; } catch (e) {}
+        try { clr  = old.characterAttributes.fillColor; } catch (e) {}
+        try { just = old.paragraphAttributes.justification; } catch (e) {}
+
+        /* 记录替换前的水平中心（只用于水平回中） */
+        var ob = null;
+        try { ob = tf.visibleBounds; } catch (e) {}
+        var ocx = ob ? (ob[0] + ob[2]) / 2 : null;
+
+        tf.contents = MAP[key];
+
+        var nw = tf.textRange;
+        try { if (fnt)  nw.characterAttributes.textFont = fnt; } catch (e) {}
+        try { if (sz)   nw.characterAttributes.size = sz; } catch (e) {}
+        try { if (clr)  nw.characterAttributes.fillColor = clr; } catch (e) {}
+        try { if (just !== null) nw.paragraphAttributes.justification = just; } catch (e) {}
+
+        /* 只做水平回中，垂直方向绝不 translate。
+           点文本基线锚在插入点上，改内容/换字体后基线自动保持原位；
+           若按 visibleBounds 垂直居中，换字体后行框高度变化（CJK ascender 很高）
+           会把基线推偏——日语标题被顶到胶囊上沿就是这个原因。 */
+        if (ocx !== null) {
+            try {
+                var nb = tf.visibleBounds;
+                tf.translate(ocx - (nb[0] + nb[2]) / 2, 0);
+            } catch (e) {}
+        }
+
+        count++;
+        log("  " + key + " -> " + MAP[key]);
+    }
+    return count;
+}
+
+function processOne(src, dst) {
+    var doc = app.open(new File(src));
+    log("OPEN " + src + " | textFrames=" + doc.textFrames.length);
+    var n = replaceInDoc(doc);
+    var opts = new IllustratorSaveOptions();
+    opts.pdfCompatible = true;
+    doc.saveAs(new File(dst), opts);
+    log("SAVE " + dst + " | replaced=" + n);
+    doc.close(SaveOptions.DONOTSAVECHANGES);
+}
+
+try {
+    app.userInteractionLevel = UserInteractionLevel.DONTDISPLAYALERTS;
+    if (BATCH_DIR !== "") {
+        var folder = new Folder(BATCH_DIR);
+        var files = folder.getFiles("*.ai");
+        log("BATCH files=" + files.length);
+        for (var i = 0; i < files.length; i++) {
+            var nm = files[i].name.replace(/\\.ai$/i, SUFFIX + ".ai");
+            processOne(files[i].absoluteURI, OUT_DIR + "/" + nm);
+        }
+    } else {
+        processOne(SRC_FILE, OUT_FILE);
+    }
+    log("DONE");
+} catch (e) {
+    log("ERROR: " + e.message + " (line " + e.line + ")");
+}
+writeLog();
